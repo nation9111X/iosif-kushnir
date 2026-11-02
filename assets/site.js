@@ -69,6 +69,8 @@
     const isPhone = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
     const weak = (navigator.deviceMemory || 4) <= 2 || (navigator.hardwareConcurrency || 4) <= 4;
     const N = isPhone ? (weak ? 1400 : 2600) : 6000;
+    // Only the final silhouette needs this density; other scenes keep their budget.
+    const mascotN = Math.max(N, (isPhone || innerWidth < 600) ? 4800 : 16000);
     let drawN = N;
     let dpr = Math.min(devicePixelRatio || 1, isPhone ? 1.5 : 2);
     const STATES = 8;
@@ -106,7 +108,7 @@
     const pointsProg = program(`
       attribute vec4 aA, aB, aS;
       uniform mat4 uM;
-      uniform float uT, uTime, uPx, uDim, uAsp, uPtrA, uRipA, uSz;
+      uniform float uT, uTime, uPx, uDim, uAsp, uPtrA, uRipA, uSz, uMascot, uGrain;
       uniform vec2 uPtr, uRip;
       uniform vec3 uCold, uWarm;
       varying vec3 vC; varying float vA;
@@ -116,7 +118,7 @@
         t = t * t * (3. - 2. * t);
         vec3 p = mix(aA.xyz, aB.xyz, t);
         p += (aS.xyz - .5) * sin(t * 3.14159) * .9;
-        p += .014 * vec3(sin(uTime * (.5 + aS.y) + aS.z * 6.28), cos(uTime * (.4 + aS.z) + aS.x * 6.28), sin(uTime * (.3 + aS.x) + aS.y * 6.28));
+        p += mix(.014, .0015, uMascot) * vec3(sin(uTime * (.5 + aS.y) + aS.z * 6.28), cos(uTime * (.4 + aS.z) + aS.x * 6.28), sin(uTime * (.3 + aS.x) + aS.y * 6.28));
         float hA = floor(aA.w), hB = floor(aB.w);
         float bA = fract(aA.w) / .99, bB = fract(aB.w) / .99;
         float h = mix(hA, hB, t) / 15., b = mix(bA, bB, t);
@@ -125,6 +127,7 @@
         vec4 c = warp(uM * vec4(p, 1.));
         gl_Position = c;
         gl_PointSize = (1.1 + b * b * 3.6 * uSz) * uPx * (5.4 / c.w) * (.75 + aS.w * .5);
+        gl_PointSize = mix(gl_PointSize, uGrain * uPx * (.9 + aS.w * .2), uMascot);
       }`, `
       precision mediump float;
       varying vec3 vC; varying float vA;
@@ -159,7 +162,7 @@
 
     const U = {};
     const uni = (p, names) => names.forEach((n) => { U[p === pointsProg ? 'p' + n : 'l' + n] = gl.getUniformLocation(p, n); });
-    uni(pointsProg, ['uSz', 'uM', 'uT', 'uTime', 'uPx', 'uDim', 'uAsp', 'uPtrA', 'uRipA', 'uPtr', 'uRip', 'uCold', 'uWarm']);
+    uni(pointsProg, ['uMascot', 'uGrain', 'uSz', 'uM', 'uT', 'uTime', 'uPx', 'uDim', 'uAsp', 'uPtrA', 'uRipA', 'uPtr', 'uRip', 'uCold', 'uWarm']);
     uni(linesProg, ['uM', 'uTime', 'uAsp', 'uPtrA', 'uRipA', 'uPtr', 'uRip', 'uCold', 'uWarm', 'uAlpha', 'uBase']);
     const aA = gl.getAttribLocation(pointsProg, 'aA');
     const aB = gl.getAttribLocation(pointsProg, 'aB');
@@ -168,6 +171,7 @@
     const aU = gl.getAttribLocation(linesProg, 'aU');
 
     const posBuf = gl.createBuffer();
+    const mascotBuf = gl.createBuffer();
     const seedBuf = gl.createBuffer();
     const netBuf = gl.createBuffer();
     const ringBuf = gl.createBuffer();
@@ -176,7 +180,7 @@
     // Постоянные случайные значения точки: разброс при перелёте и размер
     {
       const r = rng(7);
-      const s = new Float32Array(N * 4);
+      const s = new Float32Array(Math.max(N, mascotN) * 4);
       for (let i = 0; i < s.length; i++) s[i] = r();
       gl.bindBuffer(gl.ARRAY_BUFFER, seedBuf);
       gl.bufferData(gl.ARRAY_BUFFER, s, gl.STATIC_DRAW);
@@ -459,32 +463,26 @@
         return { pts, lines };
       };
 
-      /* 7. Финал: все точки собираются в талисмана */
+      /* 7. Плотный фронтальный силуэт. Сквозные глаза не засоряются задними гранями. */
       const mascot = () => {
         const pts = [];
         const u = Math.min((hw * (portrait ? 1.62 : 1.84)) / 16, 0.2);
         const X = (x) => (x - 8) * u, Y = (y) => (5 - y) * u;
-        const area = 570;
-        const dens = (M * 0.98) / area;
-        const cub = (x, y, w, h, d, bf) => {
-          const z = (d / 2) * u;
-          const eyes = (uu, vv) => {
-            if (w !== 12) return false;
-            const ex = uu * 12, ey = vv * 8;
-            return ey > 2 && ey < 4 && ((ex > 2 && ex < 3) || (ex > 9 && ex < 10));
-          };
-          rect(pts, [X(x), Y(y), z], [w * u, 0, 0], [0, -h * u, 0], w * h * dens * 1.5, bf, 1, eyes);
-          rect(pts, [X(x), Y(y), -z], [w * u, 0, 0], [0, -h * u, 0], w * h * dens * 0.5, 0.3, 1);
-          rect(pts, [X(x), Y(y), -z], [w * u, 0, 0], [0, 0, d * u], w * d * dens * 0.9, 0.62, 1);
-          rect(pts, [X(x), Y(y + h), -z], [w * u, 0, 0], [0, 0, d * u], w * d * dens * 0.4, 0.3, 1);
-          rect(pts, [X(x), Y(y), -z], [0, -h * u, 0], [0, 0, d * u], h * d * dens * 0.8, 0.45, 1);
-          rect(pts, [X(x + w), Y(y), -z], [0, -h * u, 0], [0, 0, d * u], h * d * dens * 0.8, 0.45, 1);
+        const inside = (x, y) => {
+          const head = x >= 2 && x <= 14 && y >= 0 && y <= 8;
+          const arms = y >= 4 && y <= 6 && x >= 0 && x <= 16;
+          const legs = y >= 8 && y <= 10 && [3, 5, 10, 12].some(a => x >= a && x <= a + 1);
+          const eyes = y >= 2.1 && y <= 4 && ((x >= 4 && x <= 5) || (x >= 11 && x <= 12));
+          return (head || arms || legs) && !eyes;
         };
-        cub(2, 0, 12, 8, 7, 0.95);
-        cub(0, 4, 2, 2, 3, 0.95);
-        cub(14, 4, 2, 2, 3, 0.95);
-        [3, 5, 10, 12].forEach((x) => cub(x, 8, 1, 2, 2, 0.95));
-        return pts;
+        // Stratified grains cover the whole mask instead of clustering on cube seams.
+        const step = Math.sqrt(108 / mascotN) * .97;
+        for (let y = step / 2; y < 10; y += step) for (let x = step / 2; x < 16; x += step) {
+          const px = x + (r() - .5) * step * .55;
+          const py = y + (r() - .5) * step * .55;
+          if (inside(px, py)) pts.push([X(px), Y(py), 0, .78 + r() * .2, 1]);
+        }
+        return shuffle(pts);
       };
 
       const n0 = net();
@@ -498,7 +496,17 @@
       const ac = academy();
       write(5, ac.path, ac.exact);
       write(6, box());
-      write(7, mascot());
+      const grains = mascot();
+      write(7, grains.slice(0, N));
+      const dense = new Float32Array(mascotN * 4);
+      // Preserve the first N destinations across the morph into the final scene.
+      dense.set(data.subarray(7 * N * 4, 8 * N * 4));
+      for (let i = N; i < mascotN; i++) {
+        const p = grains[i % grains.length];
+        dense.set([p[0], p[1], p[2], enc(p[3], p[4])], i * 4);
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, mascotBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, dense, gl.STATIC_DRAW);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
       gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
@@ -552,11 +560,13 @@
 
     const tilt = [-0.12, -0.42, -0.08, -0.72, -0.16, -0.22, -0.32, -0.06];
     const sizes = [1, 1, 1, 1.5, 1.35, 1.35, 1.1, 1];
-    const yaw = [0.2, 0.42, 0.3, 0.2, 0.12, 0.36, 0.62, 0.42];
+    const yaw = [0.2, 0.42, 0.3, 0.2, 0.12, 0.36, 0.62, 0.04];
     const offs = (loc, size, stride, off) => gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, off);
 
     const render = (time, s, t, spin) => {
       if (!ready) return;
+      // stateAt keeps the last stop as [6, 1]; use the dense final buffer there.
+      if (s === 6 && t >= .999) { s = 7; t = 0; }
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.enable(gl.BLEND);
@@ -564,13 +574,14 @@
       else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
       const next = Math.min(s + 1, STATES - 1);
+      const mascotMix = s === 7 ? 1 : s === 6 ? sstep(.55, 1, t) : 0;
       const sway = (x) => Math.sin(time * 0.22) * x;
-      const ry = lerp(sway(yaw[s]), sway(yaw[next]), t) + input.sx * 0.28 + spin;
-      const rx = lerp(tilt[s], tilt[next], t) + input.sy * 0.12;
+      const ry = lerp(sway(yaw[s]), sway(yaw[next]), t) + input.sx * lerp(.28, .05, mascotMix) + spin * (1 - mascotMix);
+      const rx = lerp(tilt[s], tilt[next], t) + input.sy * lerp(.12, .03, mascotMix);
       // Форма держится в свободной части экрана: над заголовком на телефоне, правее текста на компьютере
       const place = (st) => {
         if (st === 0) return [0, 0];
-        if (aspect < 1) return [0, st === 6 ? 0.42 : st === 1 ? 0.44 : 0.56];
+        if (aspect < 1) return [0, st === 7 ? .82 : st === 6 ? 0.42 : st === 1 ? 0.44 : 0.56];
         return [Math.min(1.72 * aspect, 2.9) * 0.34, 0.1];
       };
       const pa = place(s), pb = place(next);
@@ -581,11 +592,14 @@
       gl.useProgram(pointsProg);
       gl.uniformMatrix4fv(U.puM, false, mat);
       gl.uniform1f(U.puT, t);
+      gl.uniform1f(U.puMascot, mascotMix);
+      const mascotUnit = Math.min((Math.min(1.72 * aspect, 2.9) * (aspect < 1 ? 1.62 : 1.84)) / 16, .2);
+      gl.uniform1f(U.puGrain, Math.max(1.5, H * .2904 * mascotUnit * Math.sqrt(108 / mascotN) * 1.25));
       gl.uniform1f(U.puSz, lerp(sizes[s], sizes[next], t));
       gl.uniform1f(U.puTime, time);
       gl.uniform1f(U.puPx, dpr);
       gl.uniform1f(U.puAsp, aspect);
-      gl.uniform1f(U.puPtrA, input.active);
+      gl.uniform1f(U.puPtrA, input.active * lerp(1, .15, mascotMix));
       gl.uniform1f(U.puRipA, ripAge);
       gl.uniform2f(U.puPtr, input.sx, input.sy);
       gl.uniform2f(U.puRip, input.rip.x, input.rip.y);
@@ -594,15 +608,18 @@
       const heroDim = aspect < 1 ? 0.62 : 0.82;
       gl.uniform1f(U.puDim, pal.dim * lerp(s === 0 ? heroDim : 1, 1, s === 0 ? t : 1));
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+      gl.bindBuffer(gl.ARRAY_BUFFER, s === 7 ? mascotBuf : posBuf);
       gl.enableVertexAttribArray(aA);
       gl.enableVertexAttribArray(aB);
-      offs(aA, 4, 0, s * N * 16);
-      offs(aB, 4, 0, next * N * 16);
+      offs(aA, 4, 0, s === 7 ? 0 : s * N * 16);
+      offs(aB, 4, 0, s === 7 ? 0 : next * N * 16);
       gl.bindBuffer(gl.ARRAY_BUFFER, seedBuf);
       gl.enableVertexAttribArray(aS);
       offs(aS, 4, 0, 0);
-      gl.drawArrays(gl.POINTS, 0, drawN);
+      const pointCount = s === 7 ? mascotN : drawN;
+      gl.drawArrays(gl.POINTS, 0, pointCount);
+      if (canvas.dataset.pointCount !== String(pointCount)) canvas.dataset.pointCount = String(pointCount);
+      if (canvas.dataset.scene !== String(s)) canvas.dataset.scene = String(s);
 
       // Линии видны, только когда форма уже собрана
       const lineFor = (buf, count, alpha, base) => {
